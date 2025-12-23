@@ -1,0 +1,12 @@
+.env
+backend/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+frontend/node_modules
+snapshots/
+assets/
+frontend/dist/

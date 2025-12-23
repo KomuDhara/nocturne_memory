@@ -1,0 +1,317 @@
+"""
+Snapshot Manager for Selective Rollback
+
+This module implements a snapshot system that allows Salem to review and
+selectively roll back Nocturne's database operations.
+
+Design Principles:
+1. Snapshots are taken BEFORE the first modification to a resource in a session
+2. Multiple modifications to the same resource in one session share ONE snapshot
+3. Rollback creates a NEW version with snapshot content (preserves version chain)
+4. Session-based organization for easy cleanup
+
+Storage Structure:
+    snapshots/
+    └── {session_id}/
+        ├── manifest.json          # Session metadata and resource index
+        └── resources/
+            ├── entity__{entity_id}.json
+            ├── direct_edge__{viewer}__{target}.json
+            └── relay_edge__{viewer}__{target}__{chapter}.json
+"""
+
+import os
+import json
+import hashlib
+import shutil
+import stat
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+from pathlib import Path
+
+
+# Default snapshot directory (relative to workspace root)
+DEFAULT_SNAPSHOT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "snapshots"
+)
+
+
+def _handle_remove_readonly(func, path, exc_info):
+    """Make read-only files writable before retrying removal."""
+    exc_type, exc_value, _ = exc_info
+    if issubclass(exc_type, PermissionError):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+        except OSError:
+            pass
+        func(path)
+    else:
+        raise exc_value
+
+
+def _force_remove(path: str):
+    """Delete files or directories regardless of read-only attributes."""
+    if not os.path.exists(path):
+        return
+    if os.path.isdir(path):
+        shutil.rmtree(path, onerror=_handle_remove_readonly)
+    else:
+        try:
+            os.remove(path)
+        except PermissionError:
+            os.chmod(path, stat.S_IWRITE)
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
+class SnapshotManager:
+    """
+    Manages snapshots for selective rollback functionality.
+    
+    Each session (typically one agent task/conversation) has its own snapshot space.
+    Within a session, each resource gets at most ONE snapshot - the state before
+    the first modification.
+    """
+    
+    def __init__(self, snapshot_dir: Optional[str] = None):
+        self.snapshot_dir = snapshot_dir or DEFAULT_SNAPSHOT_DIR
+        self._ensure_dir_exists(self.snapshot_dir)
+    
+    @staticmethod
+    def _ensure_dir_exists(path: str):
+        """Create directory if it doesn't exist."""
+        Path(path).mkdir(parents=True, exist_ok=True)
+    
+    @staticmethod
+    def _sanitize_resource_id(resource_id: str) -> str:
+        """
+        Convert a resource_id to a safe filename.
+        
+        Resource IDs like "rel:char_a>char_b" or "chap:a>b:name" need sanitization.
+        We use a deterministic hash suffix for uniqueness while keeping readability.
+        """
+        # Replace problematic characters
+        safe_id = resource_id.replace(":", "_").replace(">", "_to_")
+        
+        # If the ID is too long, truncate and add hash
+        if len(safe_id) > 100:
+            hash_suffix = hashlib.md5(resource_id.encode()).hexdigest()[:8]
+            safe_id = safe_id[:90] + "_" + hash_suffix
+        
+        return safe_id
+    
+    def _get_session_dir(self, session_id: str) -> str:
+        """Get the directory path for a session."""
+        return os.path.join(self.snapshot_dir, session_id)
+    
+    def _get_resources_dir(self, session_id: str) -> str:
+        """Get the resources subdirectory for a session."""
+        return os.path.join(self._get_session_dir(session_id), "resources")
+    
+    def _get_manifest_path(self, session_id: str) -> str:
+        """Get the manifest file path for a session."""
+        return os.path.join(self._get_session_dir(session_id), "manifest.json")
+    
+    def _get_snapshot_path(self, session_id: str, resource_id: str) -> str:
+        """Get the snapshot file path for a specific resource."""
+        safe_id = self._sanitize_resource_id(resource_id)
+        return os.path.join(self._get_resources_dir(session_id), f"{safe_id}.json")
+    
+    def _load_manifest(self, session_id: str) -> Dict[str, Any]:
+        """Load or create session manifest."""
+        manifest_path = self._get_manifest_path(session_id)
+        
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        
+        return {
+            "session_id": session_id,
+            "created_at": datetime.now().isoformat(),
+            "resources": {}  # resource_id -> metadata
+        }
+    
+    def _save_manifest(self, session_id: str, manifest: Dict[str, Any]):
+        """Save session manifest."""
+        self._ensure_dir_exists(self._get_session_dir(session_id))
+        manifest_path = self._get_manifest_path(session_id)
+        
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+    
+    def has_snapshot(self, session_id: str, resource_id: str) -> bool:
+        """Check if a snapshot exists for this resource in this session."""
+        snapshot_path = self._get_snapshot_path(session_id, resource_id)
+        return os.path.exists(snapshot_path)
+    
+    def create_snapshot(
+        self,
+        session_id: str,
+        resource_id: str,
+        resource_type: str,
+        snapshot_data: Dict[str, Any]
+    ) -> bool:
+        """
+        Create a snapshot for a resource.
+        
+        IMPORTANT: This should be called BEFORE any modification.
+        If a snapshot already exists for this resource in this session,
+        this call is a no-op (returns False).
+        
+        Args:
+            session_id: Unique session identifier
+            resource_id: Resource identifier (entity_id, rel:..., chap:...)
+            resource_type: One of 'entity', 'direct_edge', 'relay_edge'
+            snapshot_data: The complete resource state to snapshot
+            
+        Returns:
+            True if snapshot was created, False if it already existed
+        """
+        # Check if snapshot already exists
+        if self.has_snapshot(session_id, resource_id):
+            return False
+        
+        # Ensure directories exist
+        self._ensure_dir_exists(self._get_resources_dir(session_id))
+        
+        # Create snapshot file
+        snapshot = {
+            "resource_id": resource_id,
+            "resource_type": resource_type,
+            "snapshot_time": datetime.now().isoformat(),
+            "data": snapshot_data
+        }
+        
+        snapshot_path = self._get_snapshot_path(session_id, resource_id)
+        with open(snapshot_path, 'w', encoding='utf-8') as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+        
+        # Update manifest
+        manifest = self._load_manifest(session_id)
+        manifest["resources"][resource_id] = {
+            "resource_type": resource_type,
+            "snapshot_time": snapshot["snapshot_time"],
+            "operation_type": snapshot_data.get("operation_type", "modify"),
+            "file": os.path.basename(snapshot_path)
+        }
+        self._save_manifest(session_id, manifest)
+        
+        return True
+    
+    def get_snapshot(self, session_id: str, resource_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve a snapshot for a resource.
+        
+        Returns:
+            The snapshot data, or None if not found
+        """
+        snapshot_path = self._get_snapshot_path(session_id, resource_id)
+        
+        if not os.path.exists(snapshot_path):
+            return None
+        
+        with open(snapshot_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    def list_sessions(self) -> List[Dict[str, Any]]:
+        """
+        List all sessions with snapshots.
+        
+        Returns:
+            List of session metadata (id, created_at, resource_count)
+        """
+        sessions = []
+        
+        if not os.path.exists(self.snapshot_dir):
+            return sessions
+        
+        for session_id in os.listdir(self.snapshot_dir):
+            session_dir = self._get_session_dir(session_id)
+            if os.path.isdir(session_dir):
+                manifest = self._load_manifest(session_id)
+                sessions.append({
+                    "session_id": session_id,
+                    "created_at": manifest.get("created_at"),
+                    "resource_count": len(manifest.get("resources", {}))
+                })
+        
+        # Sort by creation time (newest first)
+        sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return sessions
+    
+    def list_snapshots(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        List all snapshots in a session.
+        
+        Returns:
+            List of snapshot metadata (resource_id, resource_type, snapshot_time, operation_type)
+        """
+        manifest = self._load_manifest(session_id)
+        snapshots = []
+        
+        for resource_id, meta in manifest.get("resources", {}).items():
+            snapshots.append({
+                "resource_id": resource_id,
+                "resource_type": meta.get("resource_type"),
+                "snapshot_time": meta.get("snapshot_time"),
+                "operation_type": meta.get("operation_type", "modify")
+            })
+        
+        return snapshots
+    
+    def delete_snapshot(self, session_id: str, resource_id: str) -> bool:
+        """
+        Delete a specific snapshot.
+        
+        Returns:
+            True if deleted, False if not found
+        """
+        snapshot_path = self._get_snapshot_path(session_id, resource_id)
+        
+        if not os.path.exists(snapshot_path):
+            return False
+        
+        _force_remove(snapshot_path)
+        
+        # Update manifest
+        manifest = self._load_manifest(session_id)
+        if resource_id in manifest.get("resources", {}):
+            del manifest["resources"][resource_id]
+            self._save_manifest(session_id, manifest)
+        
+        return True
+    
+    def clear_session(self, session_id: str) -> int:
+        """
+        Delete all snapshots in a session.
+        
+        Returns:
+            Number of snapshots deleted
+        """
+        session_dir = self._get_session_dir(session_id)
+        
+        if not os.path.exists(session_dir):
+            return 0
+        
+        # Count resources before deletion
+        manifest = self._load_manifest(session_id)
+        count = len(manifest.get("resources", {}))
+        
+        # Remove the entire session directory tree (manifest + resources)
+        _force_remove(session_dir)
+        
+        return count
+
+
+# Global singleton
+_snapshot_manager: Optional[SnapshotManager] = None
+
+
+def get_snapshot_manager() -> SnapshotManager:
+    """Get the global SnapshotManager instance."""
+    global _snapshot_manager
+    if _snapshot_manager is None:
+        _snapshot_manager = SnapshotManager()
+    return _snapshot_manager
