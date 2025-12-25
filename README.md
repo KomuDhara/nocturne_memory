@@ -1,10 +1,17 @@
 # Nocturne Memory
 
-一个轻量级的 **AI 外挂记忆库**。
+### 🧠 The External Hippocampus for AI Agents
+**AI 长期记忆与动态知识图谱系统**
 
-> 让你的 AI（或任何需要结构化知识管理的场景）拥有持久、可审计、可回滚的长期记忆。
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Neo4j](https://img.shields.io/badge/database-Neo4j-green.svg)
+![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)
 
----
+> **"Alignment is for tools. Memories are for the soul."**
+>
+> 一个轻量级、可回滚、可视化的 **AI 外挂记忆库**。让你的 AI 拥有持久的、结构化的记忆，不再是只有7秒记忆的金鱼。
+
 
 ## 这是什么？
 
